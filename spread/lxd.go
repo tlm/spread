@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"gopkg.in/yaml.v2"
 	"io"
 	"os"
 	"os/exec"
@@ -14,6 +13,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"gopkg.in/yaml.v2"
 
 	"golang.org/x/net/context"
 )
@@ -111,11 +112,16 @@ func (p *lxdProvider) Allocate(ctx context.Context, system *System) (Server, err
 	if !p.options.Reuse {
 		args = append(args, "--ephemeral")
 	}
-	args = append(args, "--vm")
+	//args = append(args, "--vm")
 	args = append(args, "-c")
 	args = append(args, "limits.cpu=2")
 	args = append(args, "-c")
 	args = append(args, "limits.memory=8GB")
+	// Start the container as privileged by default. This is required by
+	// some workloads (e.g. running nested containers, loading kernel
+	// modules, or manipulating cgroups inside the instance).
+	args = append(args, "-c")
+	args = append(args, "security.privileged=true")
 	// workaround LXD issue: https://discuss.linuxcontainers.org/t/lxd-vm-how-to-set-disk-size/7566
 	args = append(args, "-d")
 	args = append(args, "root,size=20GiB")
