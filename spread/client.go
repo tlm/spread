@@ -289,12 +289,12 @@ func (c *Client) runPart(script string, dir string, env *Environment, mode outpu
 	buf.WriteString("set -eu\n")
 	var rc = func(use bool, s string) string { return s }
 	if mode == shellOutput {
-		buf.WriteString("true > /root/.bashrc\n")
+		buf.WriteString("true > \"$HOME/.bashrc\"\n")
 		rc = func(use bool, s string) string {
 			if !use {
 				return ""
 			}
-			return "cat >> /root/.bashrc <<'END'\n" + s + "END\n"
+			return "cat >> \"$HOME/.bashrc\" <<'END'\n" + s + "END\n"
 		}
 	}
 	if dir != "" {
