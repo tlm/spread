@@ -2,11 +2,18 @@ package spread
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"time"
 
 	"golang.org/x/crypto/ssh"
 )
+
+type CIEventsWriter = ciEventsWriter
+
+func NewCIEventsWriter(out io.WriteCloser, now func() time.Time) *CIEventsWriter {
+	return &ciEventsWriter{now: now, out: out}
+}
 
 func FakeClient() *Client {
 	config := &ssh.ClientConfig{
