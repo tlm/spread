@@ -13,22 +13,30 @@ import (
 	"github.com/snapcore/spread/spread"
 )
 
+const envSpreadCIEventsFile = "SPREAD_CI_EVENTS_FILE"
+
 var (
-	verbose        = flag.Bool("v", false, "Show detailed progress information")
-	vverbose       = flag.Bool("vv", false, "Show debugging messages as well")
-	list           = flag.Bool("list", false, "Just show list of jobs that would run")
-	pass           = flag.String("pass", "", "Server password to use, defaults to random")
-	reuse          = flag.Bool("reuse", false, "Keep servers running for reuse")
-	reusePid       = flag.Int("reuse-pid", 0, "Reuse servers from crashed process")
-	resend         = flag.Bool("resend", false, "Resend project content to reused servers")
-	debug          = flag.Bool("debug", false, "Run shell after script errors")
-	shell          = flag.Bool("shell", false, "Run shell instead of task scripts")
-	shellBefore    = flag.Bool("shell-before", false, "Run shell before task scripts")
-	shellAfter     = flag.Bool("shell-after", false, "Run shell after task scripts")
-	abend          = flag.Bool("abend", false, "Stop without restoring on first error")
-	restore        = flag.Bool("restore", false, "Run only the restore scripts")
-	discard        = flag.Bool("discard", false, "Discard reused servers without running")
-	artifacts      = flag.String("artifacts", "", "Where to store task artifacts")
+	verbose      = flag.Bool("v", false, "Show detailed progress information")
+	vverbose     = flag.Bool("vv", false, "Show debugging messages as well")
+	list         = flag.Bool("list", false, "Just show list of jobs that would run")
+	pass         = flag.String("pass", "", "Server password to use, defaults to random")
+	reuse        = flag.Bool("reuse", false, "Keep servers running for reuse")
+	reusePid     = flag.Int("reuse-pid", 0, "Reuse servers from crashed process")
+	resend       = flag.Bool("resend", false, "Resend project content to reused servers")
+	debug        = flag.Bool("debug", false, "Run shell after script errors")
+	shell        = flag.Bool("shell", false, "Run shell instead of task scripts")
+	shellBefore  = flag.Bool("shell-before", false, "Run shell before task scripts")
+	shellAfter   = flag.Bool("shell-after", false, "Run shell after task scripts")
+	abend        = flag.Bool("abend", false, "Stop without restoring on first error")
+	restore      = flag.Bool("restore", false, "Run only the restore scripts")
+	discard      = flag.Bool("discard", false, "Discard reused servers without running")
+	artifacts    = flag.String("artifacts", "", "Where to store task artifacts")
+	ciEventsFile = flag.String(
+		"ci-events",
+		"",
+		"Write JSONL event stream for CI consumers to this file "+
+			"(defaults to "+envSpreadCIEventsFile+" when unset)",
+	)
 	seed           = flag.Int64("seed", 0, "Seed for job order permutation")
 	repeat         = flag.Int("repeat", 0, "Number of times to repeat each task")
 	garbageCollect = flag.Bool("gc", false, "Garbage collect backend resources when possible")
@@ -77,6 +85,11 @@ func run() error {
 		}
 	}
 
+	ciEventsFilePath := *ciEventsFile
+	if ciEventsFilePath == "" {
+		ciEventsFilePath = os.Getenv(envSpreadCIEventsFile)
+	}
+
 	options := &spread.Options{
 		Password:       password,
 		Filter:         filter,
@@ -91,6 +104,7 @@ func run() error {
 		Restore:        *restore,
 		Discard:        *discard,
 		Artifacts:      *artifacts,
+		CIEventsFile:   ciEventsFilePath,
 		Seed:           *seed,
 		Repeat:         *repeat,
 		GarbageCollect: *garbageCollect,

@@ -13,9 +13,10 @@ import (
 	"sync"
 	"time"
 
-	"gopkg.in/tomb.v2"
 	"math"
 	"math/rand"
+
+	"gopkg.in/tomb.v2"
 )
 
 type Options struct {
@@ -32,6 +33,7 @@ type Options struct {
 	Resend         bool
 	Discard        bool
 	Artifacts      string
+	CIEventsFile   string
 	Seed           int64
 	Repeat         int
 	GarbageCollect bool
@@ -44,6 +46,7 @@ type Runner struct {
 	project   *Project
 	options   *Options
 	providers map[string]Provider
+	ciEvents  *ciEventsWriter
 
 	contentTomb tomb.Tomb
 	contentFile *os.File
@@ -113,6 +116,11 @@ func Start(project *Project, options *Options) (*Runner, error) {
 		return nil, err
 	}
 
+	r.ciEvents, err = makeCIEventsWriter(options.CIEventsFile)
+	if err != nil {
+		return nil, err
+	}
+
 	r.tomb.Go(r.loop)
 	return r, nil
 }
@@ -137,6 +145,8 @@ func (r *Runner) Stop() error {
 }
 
 func (r *Runner) loop() (err error) {
+	defer r.ciEvents.Close()
+
 	if r.options.GarbageCollect {
 		return nil
 	}
@@ -152,10 +162,18 @@ func (r *Runner) loop() (err error) {
 			for _, job := range r.pending {
 				if job != nil {
 					r.add(&r.stats.TaskAbort, job)
+					r.ciEvents.EmitTaskFinished(job.Name, statusAborted, "", 0, 0, 0)
 				}
 			}
 			r.stats.log()
 		}
+
+		r.ciEvents.EmitRunFinished(
+			len(r.stats.TaskDone),
+			len(r.stats.TaskError)+len(r.stats.TaskPrepareError)+len(r.stats.TaskRestoreError),
+			len(r.stats.TaskAbort)-len(r.stats.TaskPrepareError),
+		)
+
 		if !r.options.Reuse || r.options.Discard {
 			for len(r.servers) > 0 {
 				printf("Discarding %s...", r.servers[0])
@@ -216,6 +234,8 @@ func (r *Runner) loop() (err error) {
 	if !r.options.Discard && !r.options.Reuse && r.options.ReusePid == 0 {
 		printf("If killed, discard servers with: spread -reuse-pid=%d -discard", os.Getpid())
 	}
+
+	r.ciEvents.EmitRunStarted(seed, len(r.pending))
 
 	for _, backend := range r.project.Backends {
 		for _, system := range backend.Systems {
@@ -414,6 +434,61 @@ const (
 	restoring = "restoring"
 )
 
+// ciPhaseFor maps runner verb constants to the wire-level phase values
+// emitted in CI events.
+func ciPhaseFor(verb string) ciPhase {
+	switch verb {
+	case preparing:
+		return phasePrepare
+	case executing:
+		return phaseExecute
+	case restoring:
+		return phaseRestore
+	}
+	return ciPhase(verb)
+}
+
+// emitTaskAborted emits a task_finished event with status aborted for a job
+// that was dequeued by a worker but never reached the task-level phases (i.e.
+// an enclosing prepare failed, or a suite was marked bad). No failed_phase,
+// no attempt info; duration covers the dequeue-to-abort window.
+func (r *Runner) emitTaskAborted(job *Job, jobStart time.Time) {
+	durMS := time.Since(jobStart).Milliseconds()
+	r.ciEvents.EmitTaskFinished(job.Name, statusAborted, "", 0, 0, durMS)
+}
+
+// emitTaskFinished emits a task_finished event for a job that reached the
+// inner repeat loop. If finalStatus is empty (e.g. restore-only mode with a
+// successful restore), the task is reported as aborted. attempt and
+// attemptsTotal are only included on the wire when there is more than one
+// configured attempt.
+func (r *Runner) emitTaskFinished(
+	job *Job,
+	jobStart time.Time,
+	finalStatus ciStatus,
+	finalFailedPhase ciPhase,
+	finalAttempt, attemptsTotal int,
+) {
+	if finalStatus == "" {
+		finalStatus = statusAborted
+		finalFailedPhase = ""
+	}
+	var emitAttempt, emitTotal int
+	if attemptsTotal > 1 {
+		emitAttempt = finalAttempt
+		emitTotal = attemptsTotal
+	}
+	durMS := time.Since(jobStart).Milliseconds()
+	r.ciEvents.EmitTaskFinished(
+		job.Name,
+		finalStatus,
+		finalFailedPhase,
+		emitAttempt,
+		emitTotal,
+		durMS,
+	)
+}
+
 func (r *Runner) run(client *Client, job *Job, verb string, context interface{}, script, debug string, abend *bool) bool {
 	script = strings.TrimSpace(script)
 	server := client.Server()
@@ -433,6 +508,9 @@ func (r *Runner) run(client *Client, job *Job, verb string, context interface{},
 		r.mu.Unlock()
 	} else {
 		printft(start, startTime, "%s %s (%s)...", strings.Title(verb), contextStr, server.Label())
+	}
+	if context == job {
+		r.ciEvents.EmitTaskPhase(job.Name, ciPhaseFor(verb))
 	}
 	var dir string
 	if context == job.Backend || context == job.Project {
@@ -548,8 +626,12 @@ func (r *Runner) worker(backend *Backend, system *System, order []int) {
 		r.suiteWorkers[suiteWorkersKey(job)]++
 		r.mu.Unlock()
 
+		jobStart := time.Now()
+		r.ciEvents.EmitTaskStarted(job.Name)
+
 		if badSuite[job.Suite] {
 			r.add(&stats.TaskAbort, job)
+			r.emitTaskAborted(job, jobStart)
 			continue
 		}
 
@@ -559,6 +641,7 @@ func (r *Runner) worker(backend *Backend, system *System, order []int) {
 			} else if !r.run(client, last, restoring, insideSuite, insideSuite.Restore, insideSuite.Debug, &abend) {
 				r.add(&stats.SuiteRestoreError, last)
 				r.add(&stats.TaskAbort, job)
+				r.emitTaskAborted(job, jobStart)
 				badProject = true
 				continue
 			}
@@ -572,6 +655,7 @@ func (r *Runner) worker(backend *Backend, system *System, order []int) {
 			if !r.options.Restore && !r.run(client, job, preparing, r.project, r.project.Prepare, r.project.Debug, &abend) {
 				r.add(&stats.ProjectPrepareError, job)
 				r.add(&stats.TaskAbort, job)
+				r.emitTaskAborted(job, jobStart)
 				badProject = true
 				continue
 			}
@@ -580,6 +664,7 @@ func (r *Runner) worker(backend *Backend, system *System, order []int) {
 			if !r.options.Restore && !r.run(client, job, preparing, backend, backend.Prepare, backend.Debug, &abend) {
 				r.add(&stats.BackendPrepareError, job)
 				r.add(&stats.TaskAbort, job)
+				r.emitTaskAborted(job, jobStart)
 				badProject = true
 				continue
 			}
@@ -590,25 +675,38 @@ func (r *Runner) worker(backend *Backend, system *System, order []int) {
 			if !r.options.Restore && !r.run(client, job, preparing, job.Suite, job.Suite.Prepare, job.Suite.Debug, &abend) {
 				r.add(&stats.SuitePrepareError, job)
 				r.add(&stats.TaskAbort, job)
+				r.emitTaskAborted(job, jobStart)
 				badSuite[job.Suite] = true
 				continue
 			}
 		}
 
 		debug := job.Debug()
+		attemptsTotal := r.options.Repeat + 1
+		var finalStatus ciStatus
+		var finalFailedPhase ciPhase
+		var finalAttempt int
 		for repeat := r.options.Repeat; repeat >= 0; repeat-- {
+			finalAttempt = attemptsTotal - repeat
+			finalStatus = ""
+			finalFailedPhase = ""
 			if r.options.Restore {
 				// Do not prepare or execute, and don't repeat.
 				repeat = -1
 			} else if !r.options.Restore && !r.run(client, job, preparing, job, job.Prepare(), debug, &abend) {
 				r.add(&stats.TaskPrepareError, job)
 				r.add(&stats.TaskAbort, job)
+				finalStatus = statusFailed
+				finalFailedPhase = phasePrepare
 				debug = ""
 				repeat = -1
 			} else if !r.options.Restore && r.run(client, job, executing, job, job.Task.Execute, debug, &abend) {
 				r.add(&stats.TaskDone, job)
+				finalStatus = statusPassed
 			} else if !r.options.Restore {
 				r.add(&stats.TaskError, job)
+				finalStatus = statusFailed
+				finalFailedPhase = phaseExecute
 				debug = ""
 				repeat = -1
 			}
@@ -620,10 +718,13 @@ func (r *Runner) worker(backend *Backend, system *System, order []int) {
 			}
 			if !abend && !r.run(client, job, restoring, job, job.Restore(), debug, &abend) {
 				r.add(&stats.TaskRestoreError, job)
+				finalStatus = statusFailed
+				finalFailedPhase = phaseRestore
 				badProject = true
 				repeat = -1
 			}
 		}
+		r.emitTaskFinished(job, jobStart, finalStatus, finalFailedPhase, finalAttempt, attemptsTotal)
 	}
 
 	if !abend && insideSuite != nil {
