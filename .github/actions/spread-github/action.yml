@@ -1,0 +1,68 @@
+# Composite action: report a spread run as GitHub Check Runs.
+#
+# Installs spread-github from canonical/spread at the same ref the caller
+# pinned this action at, then invokes it. spread-github tails spread's
+# event stream and POSTs/PATCHes one Check Run per spread task against
+# the caller's commit.
+#
+# The caller is responsible for:
+#   - checking out their repository (the one containing the spread.yaml)
+#   - provisioning any backends spread will use (lxd, qemu, etc.)
+#   - granting `checks: write` permission on the calling job
+#   - passing GITHUB_TOKEN through the step's env block
+#
+# Minimal caller example:
+#
+#   jobs:
+#     test:
+#       runs-on: ubuntu-latest
+#       permissions:
+#         checks: write
+#         contents: read
+#       steps:
+#         - uses: actions/checkout@v4
+#         - run: sudo snap install lxd && sudo lxd init --auto
+#         - uses: canonical/spread/.github/actions/spread-github@<ref>
+#           with:
+#             spread-args: "lxd:ubuntu-24.04:tests/"
+#           env:
+#             GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+name: spread-github
+description: Run spread tests and report results as GitHub Check Runs.
+
+inputs:
+  spread-args:
+    description: >
+      Arguments to forward to spread (after the `--` separator).
+      E.g. "-v lxd:ubuntu-24.04:tests/foo".
+    required: true
+
+  spread-binary:
+    description: >
+      Path or name of the binary spread-github invokes. Defaults to
+      "spread" on PATH. Override when the caller wraps spread in
+      another program, e.g. `sdkcraft test`.
+    required: false
+    default: "spread"
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: stable
+
+    - name: Install spread-github
+      shell: bash
+      env:
+        ACTION_REF: ${{ github.action_ref }}
+      run: |
+        go install "github.com/snapcore/spread/cmd/spread-github@${ACTION_REF}"
+
+    - name: Run spread via spread-github
+      shell: bash
+      env:
+        SPREAD_BINARY: ${{ inputs.spread-binary }}
+      run: spread-github -- ${{ inputs.spread-args }}
