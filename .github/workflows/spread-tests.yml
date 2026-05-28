@@ -1,0 +1,68 @@
+# Reusable workflow: report a spread run as GitHub Check Runs.
+#
+# Intended to be called from another repository's workflow via
+#   uses: canonical/spread/.github/workflows/spread-tests.yml@<ref>
+#
+# The workflow builds spread-github from canonical/spread at the same ref
+# the caller pinned, then invokes it. spread-github tails the spread event
+# stream and POSTs/PATCHes one GitHub Check Run per spread task against
+# the caller's commit.
+#
+# The caller is responsible for providing a spread binary (default 'spread'
+# on PATH) and for provisioning any backends spread will use (lxd, qemu,
+# etc.). This workflow only builds spread-github.
+
+name: spread tests
+
+on:
+  workflow_call:
+    inputs:
+      spread-args:
+        description: >
+          Arguments to forward to spread (after the `--` separator).
+          E.g. "-v lxd:ubuntu-24.04:tests/foo".
+        type: string
+        required: true
+
+      spread-binary:
+        description: >
+          Path or name of the binary spread-github invokes. Defaults to
+          "spread" on PATH. Override when the caller wraps spread in
+          another program, e.g. `sdkcraft test`.
+        type: string
+        required: false
+        default: "spread"
+
+jobs:
+  spread:
+    runs-on: ubuntu-latest
+    permissions:
+      checks: write
+      contents: read
+    steps:
+      - name: Check out caller repository
+        uses: actions/checkout@v4
+
+      - name: Check out spread
+        uses: actions/checkout@v4
+        with:
+          repository: canonical/spread
+          path: .spread-src
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: .spread-src/go.mod
+
+      - name: Build spread-github
+        working-directory: .spread-src
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          go build -o "$HOME/.local/bin/spread-github" ./cmd/github
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Run spread via spread-github
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SPREAD_BINARY: ${{ inputs.spread-binary }}
+        run: spread-github -- ${{ inputs.spread-args }}
