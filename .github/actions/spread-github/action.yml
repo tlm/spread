@@ -56,10 +56,9 @@ runs:
 
     - name: Install spread-github
       shell: bash
-      env:
-        ACTION_REF: ${{ github.action_ref }}
+      working-directory: ${{ github.action_path }}/../../..
       run: |
-        go install "github.com/snapcore/spread/cmd/spread-github@${ACTION_REF}"
+        go install ./cmd/spread-github
 
     - name: Run spread via spread-github
       shell: bash
