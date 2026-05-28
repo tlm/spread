@@ -20,10 +20,10 @@ import (
 // are omitempty so a single shape can serve both: POST sets name/head_sha/
 // status; PATCH sets status/conclusion.
 type checkRunRequest struct {
-	Conclusion string `json:"conclusion,omitempty"`
-	HeadSHA    string `json:"head_sha,omitempty"`
-	Name       string `json:"name,omitempty"`
-	Status     string `json:"status,omitempty"`
+	Conclusion conclusion `json:"conclusion,omitempty"`
+	HeadSHA    string     `json:"head_sha,omitempty"`
+	Name       string     `json:"name,omitempty"`
+	Status     string     `json:"status,omitempty"`
 }
 
 // checkRunResponse captures the fields we need from a created Check Run.
@@ -41,6 +41,10 @@ type checksClient struct {
 	token  string
 }
 
+// conclusion is the terminal outcome reported on a Check Run when it
+// transitions to status completed.
+type conclusion string
+
 // doer abstracts the single method of [http.Client] that checksClient relies
 // on, so tests can substitute a fake transport without spinning up a real
 // HTTP server.
@@ -51,9 +55,9 @@ type doer interface {
 const (
 	apiURLDefault = "https://api.github.com"
 
-	conclusionCancelled = "cancelled"
-	conclusionFailure   = "failure"
-	conclusionSuccess   = "success"
+	conclusionCancelled conclusion = "cancelled"
+	conclusionFailure   conclusion = "failure"
+	conclusionSuccess   conclusion = "success"
 
 	githubAPIVersion = "2022-11-28"
 
@@ -73,9 +77,9 @@ const (
 
 // complete patches an existing Check Run to status completed with the given
 // conclusion.
-func (c *checksClient) complete(id int64, conclusion string) error {
+func (c *checksClient) complete(id int64, conc conclusion) error {
 	body := checkRunRequest{
-		Conclusion: conclusion,
+		Conclusion: conc,
 		Status:     statusCompleted,
 	}
 	var buf bytes.Buffer
@@ -97,18 +101,19 @@ func (c *checksClient) complete(id int64, conclusion string) error {
 }
 
 // conclusionFor maps a spread task_finished status to the GitHub Check Run
-// conclusion string. Returns the empty string for unknown statuses so the
-// caller can surface a precise error.
-func conclusionFor(status string) string {
+// conclusion value. The second return value is false when the status is
+// unrecognised, letting the caller surface a precise error instead of
+// silently emitting an inferred conclusion.
+func conclusionFor(status string) (conclusion, bool) {
 	switch status {
 	case "passed":
-		return conclusionSuccess
+		return conclusionSuccess, true
 	case "failed":
-		return conclusionFailure
+		return conclusionFailure, true
 	case "aborted":
-		return conclusionCancelled
+		return conclusionCancelled, true
 	}
-	return ""
+	return "", false
 }
 
 // create posts a new Check Run with status in_progress and returns its
@@ -144,9 +149,9 @@ func (c *checksClient) create(name string) (int64, error) {
 // createCompleted posts a new Check Run already in the completed state. Used
 // for tasks that emit task_finished with no prior task_started (e.g. jobs the
 // runner never picked up), so the wrapper avoids a wasted POST+PATCH pair.
-func (c *checksClient) createCompleted(name, conclusion string) error {
+func (c *checksClient) createCompleted(name string, conc conclusion) error {
 	body := checkRunRequest{
-		Conclusion: conclusion,
+		Conclusion: conc,
 		HeadSHA:    c.sha,
 		Name:       name,
 		Status:     statusCompleted,
@@ -206,4 +211,12 @@ func (c *checksClient) do(
 		)
 	}
 	return resp.Body, nil
+}
+
+// String returns the conclusion's underlying string value, satisfying the
+// [fmt.Stringer] interface so the typed value formats as the plain wire
+// string (e.g. "success") with %s and other Stringer-aware APIs rather than
+// as its typed wrapper form.
+func (c conclusion) String() string {
+	return string(c)
 }

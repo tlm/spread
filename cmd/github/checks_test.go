@@ -124,7 +124,7 @@ func (s *checksSuite) TestCompleteRequest(c *C) {
 		"https://api.example.com/repos/owner/repo/check-runs/42",
 	)
 	c.Check(decodeJSON(c, d.body), DeepEquals, map[string]any{
-		"conclusion": conclusionSuccess,
+		"conclusion": conclusionSuccess.String(),
 		"status":     statusCompleted,
 	})
 }
@@ -133,32 +133,40 @@ func (s *checksSuite) TestCompleteRequest(c *C) {
 // conclusion, used for tasks the runner never picked up or that were
 // skipped due to upstream prepare failures.
 func (s *checksSuite) TestConclusionForAborted(c *C) {
-	c.Check(conclusionFor("aborted"), Equals, conclusionCancelled)
+	conc, ok := conclusionFor("aborted")
+	c.Check(ok, Equals, true)
+	c.Check(conc, Equals, conclusionCancelled)
 }
 
-// TestConclusionForEmpty returns the empty string for an empty status, so
-// the caller can distinguish "unmapped" from a real conclusion.
+// TestConclusionForEmpty returns ok=false for an empty status so the caller
+// can distinguish "unmapped" from a real conclusion.
 func (s *checksSuite) TestConclusionForEmpty(c *C) {
-	c.Check(conclusionFor(""), Equals, "")
+	_, ok := conclusionFor("")
+	c.Check(ok, Equals, false)
 }
 
 // TestConclusionForFailed maps the failed status to the failure conclusion,
 // used for tasks where prepare, execute, or restore returned an error.
 func (s *checksSuite) TestConclusionForFailed(c *C) {
-	c.Check(conclusionFor("failed"), Equals, conclusionFailure)
+	conc, ok := conclusionFor("failed")
+	c.Check(ok, Equals, true)
+	c.Check(conc, Equals, conclusionFailure)
 }
 
 // TestConclusionForPassed maps the passed status to the success conclusion,
 // used for tasks whose execute phase completed without error.
 func (s *checksSuite) TestConclusionForPassed(c *C) {
-	c.Check(conclusionFor("passed"), Equals, conclusionSuccess)
+	conc, ok := conclusionFor("passed")
+	c.Check(ok, Equals, true)
+	c.Check(conc, Equals, conclusionSuccess)
 }
 
-// TestConclusionForUnknown returns the empty string for any status the
-// mapping does not recognise. Lets the caller surface a precise error
-// rather than silently translating to a default conclusion.
+// TestConclusionForUnknown returns ok=false for any status the mapping does
+// not recognise. Lets the caller surface a precise error rather than
+// silently translating to a default conclusion.
 func (s *checksSuite) TestConclusionForUnknown(c *C) {
-	c.Check(conclusionFor("unknown"), Equals, "")
+	_, ok := conclusionFor("unknown")
+	c.Check(ok, Equals, false)
 }
 
 // TestCreateCompletedRequest verifies that createCompleted() issues a POST
@@ -179,7 +187,7 @@ func (s *checksSuite) TestCreateCompletedRequest(c *C) {
 		"https://api.example.com/repos/owner/repo/check-runs",
 	)
 	c.Check(decodeJSON(c, d.body), DeepEquals, map[string]any{
-		"conclusion": conclusionFailure,
+		"conclusion": conclusionFailure.String(),
 		"head_sha":   "deadbeef",
 		"name":       "task/1",
 		"status":     statusCompleted,
