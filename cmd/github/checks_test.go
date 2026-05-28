@@ -17,16 +17,6 @@ import (
 // transport and HTTP-level failures.
 type checksSuite struct{}
 
-// fakeDoer is a [doer] implementation that captures the request passed to
-// Do and returns a configured response or error. Single-request use — tests
-// that need multiple calls construct a new fakeDoer per call.
-type fakeDoer struct {
-	body     string
-	err      error
-	request  *http.Request
-	response *http.Response
-}
-
 var _ = Suite(&checksSuite{})
 
 // decodeJSON parses a JSON object string into a generic map so tests can
@@ -36,24 +26,6 @@ func decodeJSON(c *C, body string) map[string]any {
 	err := json.NewDecoder(strings.NewReader(body)).Decode(&m)
 	c.Assert(err, IsNil, Commentf("body: %q", body))
 	return m
-}
-
-// Do records the request (consuming its body into f.body) and returns the
-// configured response or error.
-func (f *fakeDoer) Do(req *http.Request) (*http.Response, error) {
-	if req.Body != nil {
-		data, _ := io.ReadAll(req.Body)
-		f.body = string(data)
-		req.Body.Close()
-	}
-	f.request = req
-	if f.err != nil {
-		return nil, f.err
-	}
-	if f.response == nil {
-		return okResponse(""), nil
-	}
-	return f.response, nil
 }
 
 // errorResponse builds a non-2xx [http.Response] with an empty body for use
